@@ -1,0 +1,55 @@
+/**
+ * This file should only contain HTML tags as to set the base for those elements.
+ * Set the default style for the elements. No CSS ID or CLASSES should go here.
+ * Also tag ONLY ONE TAG per rule.
+ * good example:
+ *	h1 { font-size: 2em; ... }
+ *	a { color: blue; ... }
+ * h2, h3 { margin-bottom: 0.8em; ... }
+ *
+ * Bad examples:
+ *	h1 p { ... }
+ *	h1 + p { ... }
+ *	h1 > a { ... }
+ * Nothing that increases the strength of the selector, making it harder to override
+ */
+@font-face {
+	font-family: "Sarabun";
+	src: url('/assets/fonts/sarabun-regular.ttf') format("truetype")
+}
+
+html {
+	height: 100%;
+	margin: 0;
+}
+
+body {
+	background-color: rgba(255, 255, 255, 1.0);
+	font-family: "Sarabun", sans-serif;
+	font-size: 16px;
+	height: 100%;
+	margin: 0;
+	padding: 0;
+}
+
+p {
+	text-indent: 0.625em;
+	margin-left: 0.625em
+}
+
+a {
+	color: rgb(100, 101, 255);
+	text-decoration: none
+}
+
+a:hover {
+	text-decoration: underline
+}
+
+dt {
+	font-weight: bold;
+}
+
+dd {
+	margin-bottom: 1em;
+}
