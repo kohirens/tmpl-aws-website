@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+    nginx:
+        build:
+            dockerfile: '.docker/nginx/Dockerfile'
+            context: '..'
+        image: '{{ .DomainName }}'
+        ports:
+            - '4433:4433'
+        volumes:
+           - '../public/:/usr/share/nginx/html/'
+           - './nginx/default.conf:/etc/nginx/http.d/default.conf'
+        networks:
+            netwk: null
+
+networks:
+    netwk: null
+

@@ -1,0 +1,228 @@
+version: 2.1
+
+orbs:
+  vr: kohirens/version-release@3.1.0
+
+parameters:
+  ctx_release:
+    default: {{ .AutomationContext }}
+    description: Release context
+    type: string
+  ctx_dockerhub:
+    default: {{ .AutomationContextDocker }}
+    description: Secrets context
+    type: string
+  ctx_iac_test:
+    default: {{ .AutomationContextIaCTest }}
+    description: Secrets context
+    type: string
+  ctx_iac_prod:
+    default: {{ .AutomationContextIaCProd }}
+    description: Secrets context
+    type: string
+  domain:
+    default: {{ .DomainName }}
+    description: Website domain name
+    type: string
+  ssh_finger:
+    description: SSH fingerprint.
+    type: string
+    default: "{{ .SSHFingerprint }}"
+  triggered_flow:
+    default: "workflow-selector"
+    description: Workflow to be executed.
+    type: string
+
+executors:
+  kohirens_aws:
+    docker:
+      - image: kohirens/alpine-awscli:2.13.32
+        auth:
+          username: ${DH_USER}
+          password: ${DH_PASS}
+
+  kohirens_go:
+    docker:
+      - image: kohirens/circleci-go:0.4.1
+        auth:
+          username: ${DH_USER}
+          password: ${DH_PASS}
+
+  aws-tf:
+    docker:
+      - image: kohirens/circleci-aws-iac-tf:0.2.0
+        auth:
+          username: ${DH_USER}
+          password: ${DH_PASS}
+
+filter-semantic-tag: &filter-semantic-tag
+  tags:
+    only: /^v?\d+\.\d+\.\d+$/
+  branches:
+    ignore: /.*/
+
+jobs:
+  publish-to-s3:
+    executor: kohirens_aws
+    parameters:
+      bucket:
+        type: string
+    steps:
+      - checkout
+      - run: # see: https://docs.aws.amazon.com/cli/latest/reference/s3/ or https://awscli.amazonaws.com/v2/documentation/api/latest/reference/s3/sync.html or https://docs.aws.amazon.com/cli/latest/userguide/cli-services-s3-commands.html#using-s3-commands-managing-objects-sync
+          name: "upload site"
+          command: aws s3 sync public s3://<< parameters.bucket >>/ --delete
+
+  deploy-iac:
+    executor: aws-tf
+    parameters:
+      cmd:
+        default: plan
+        enum: [ plan, apply ]
+        description: Which command to run.
+        type: enum
+      module_path:
+        type: string
+    steps:
+      - checkout
+      - attach_workspace: # This will restore the lambda zip package from the build job.
+          at: .
+      - run:
+          name: TerraGrunt validate
+          command: |
+            mv bootstrap.zip << parameters.module_path >>
+            echo "export TF_VAR_lf_environment_vars={VERBOSITY_LEVEL:6}\"" >> ${BASH_ENV}
+            cd << parameters.module_path >>
+            terragrunt validate
+      - when:
+          condition:
+            equal: [ plan, << parameters.cmd >> ]
+          steps:
+            - run:
+                name: TerraGrunt plan
+                command: cd "<< parameters.module_path >>" && terragrunt plan -out="the-plan"
+            - persist_to_workspace:
+                root: .
+                paths: [ << parameters.module_path >>/.terragrunt-cache, << parameters.module_path >>/.terraform.lock.hcl ]
+      - when:
+          condition:
+            equal: [ apply, << parameters.cmd >> ]
+          steps:
+            - run:
+                name: TerraGrunt apply
+                command: |
+                  cd "<< parameters.module_path >>"
+                  terragrunt apply "the-plan"
+
+  download-lambda-pkg:
+    executor: kohirens_go
+    steps:
+      - run:
+          name: "Download lambda code package"
+          command: |
+            wget https://github.com/kohirens/aws-tf-s3-website/releases/download/1.4.1/bootstrap.zip
+      - persist_to_workspace:
+          root: .
+          paths: [ bootstrap.zip ]
+
+workflows:
+  quality_checks:
+    jobs:
+      - download-lambda-pkg:
+          filters: { branches: { ignore: /main|auto-update-changelog/ } }
+          context:
+            - << pipeline.parameters.ctx_dockerhub >>
+            - << pipeline.parameters.ctx_iac_test >>
+      - deploy-iac:
+          name: plan-iac-deployment
+          context:
+            - << pipeline.parameters.ctx_iac_test >>
+            - << pipeline.parameters.ctx_dockerhub >>
+          module_path: iac/test/website
+          cmd: plan
+          requires: [ download-lambda-pkg ]
+      - approve-iac-deploy:
+          type: approval
+          requires: [ plan-iac-deployment ]
+      - deploy-iac:
+          name: apply-iac-plan
+          context:
+            - << pipeline.parameters.ctx_iac_test >>
+            - << pipeline.parameters.ctx_dockerhub >>
+          module_path: iac/test/website
+          cmd: apply
+          requires: [ approve-iac-deploy ]
+      - publish-to-s3:
+          bucket: www.test.<< pipeline.parameters.domain >>
+          context:
+            - << pipeline.parameters.ctx_dockerhub >>
+            - << pipeline.parameters.ctx_iac_test >>
+          requires: [ apply-iac-plan ]
+
+  workflow-selector:
+    when:
+      and:
+        - equal: ["workflow-selector", << pipeline.parameters.triggered_flow >>]
+        - equal: [ main, << pipeline.git.branch >> ]
+    jobs:
+      - vr/workflow-selector:
+          context: << pipeline.parameters.ctx_release >>
+          ssh_finger: << pipeline.parameters.ssh_finger >>
+
+  publish-changelog:
+    when:
+      and:
+        - equal: ["publish-changelog", << pipeline.parameters.triggered_flow >>]
+    jobs:
+      - vr/publish-changelog:
+          context: << pipeline.parameters.ctx_release >>
+          ssh_finger: << pipeline.parameters.ssh_finger >>
+
+  publish-release-tag:
+    when:
+      and:
+        - equal: ["publish-release-tag", << pipeline.parameters.triggered_flow >>]
+    jobs:
+      - vr/tag-and-release:
+          context: << pipeline.parameters.ctx_release >>
+
+  on-tag-release:
+    jobs:
+      - download-lambda-pkg:
+          context: << pipeline.parameters.ctx_dockerhub >>
+          filters:
+            <<: *filter-semantic-tag
+      - deploy-iac:
+          name: plan-iac-prod-deployment
+          context:
+            - << pipeline.parameters.ctx_dockerhub >>
+            - << pipeline.parameters.ctx_iac_prod >>
+          filters:
+            <<: *filter-semantic-tag
+          module_path: iac/prod/website
+          cmd: plan
+          requires: [ download-lambda-pkg ]
+      - approve-iac-deploy:
+          name: approve-prod-deployment
+          filters:
+            <<: *filter-semantic-tag
+          type: approval
+          requires: [ plan-iac-prod-deployment ]
+      - deploy-iac:
+          name: apply-iac-prod-plan
+          context:
+            - << pipeline.parameters.ctx_dockerhub >>
+            - << pipeline.parameters.ctx_iac_prod >>
+          filters:
+            <<: *filter-semantic-tag
+          module_path: iac/prod/website
+          cmd: apply
+          requires: [ approve-prod-deployment ]
+      - publish-to-s3:
+          bucket: www.<< pipeline.parameters.domain >>
+          context:
+            - << pipeline.parameters.ctx_dockerhub >>
+            - << pipeline.parameters.ctx_iac_prod >>
+          filters:
+            <<: *filter-semantic-tag
+          requires: [ apply-iac-prod-plan ]

@@ -1,0 +1,33 @@
+.s-body {
+    display: grid;
+    gap: 0;
+    grid-template-columns: 25% 75%;
+    grid-template-rows: 5em max-content auto 20%;
+    grid-template-areas:
+        ". h"
+		". b"
+        "m c"
+        "f f";
+}
+
+.s-header {
+    display: grid;
+    grid-area: h;
+    align-content: end
+}
+
+.s-hr {
+    grid-area: b
+}
+
+.s-navigation {
+    grid-area: m
+}
+
+.s-content {
+    grid-area: c
+}
+
+.s-footer {
+    grid-area: f
+}
